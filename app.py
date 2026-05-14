@@ -31,17 +31,16 @@ st.set_page_config(
 init_db()
 
 # ----------------------------------------------------
-# AUTH / LICENSE
+# AUTH — SOLO USERNAME + PASSWORD
 # ----------------------------------------------------
 VALID_USERS = {
-    "admin": {
-        "password": "admin123",
-        "license_until": "2027-12-31",  # adjust as needed
+    "preferred": {
+        "password": "material123",
+        "license_until": "2027-12-31",  # licencia global corporativa
     }
 }
 
-
-def check_license(user: str, pwd: str):
+def check_login(user: str, pwd: str):
     data = VALID_USERS.get(user)
     if not data:
         return False, "User not found."
@@ -52,7 +51,7 @@ def check_license(user: str, pwd: str):
     today = datetime.date.today()
     exp = datetime.datetime.strptime(data["license_until"], "%Y-%m-%d").date()
     if today > exp:
-        return False, "License expired."
+        return False, "Company license expired."
 
     return True, "OK"
 
@@ -60,7 +59,9 @@ def check_license(user: str, pwd: str):
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
-# Login screen
+# ----------------------------------------------------
+# LOGIN UI
+# ----------------------------------------------------
 st.markdown(
     """
     <style>
@@ -105,10 +106,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Login image (you can place a photo in assets/photos and adjust path)
+# Login image
 login_image_path = os.path.join("assets", "photos", "login.jpg")
 if os.path.exists(login_image_path):
-    st.image(login_image_path, use_column_width=True)
+    st.image(login_image_path, use_container_width=True)
 
 st.markdown("### Login")
 
@@ -119,7 +120,7 @@ with col_login2:
     pwd = st.text_input("Password", type="password")
 
 if st.button("LOGIN"):
-    ok, msg = check_license(user, pwd)
+    ok, msg = check_login(user, pwd)
     if ok:
         st.session_state.auth = True
         st.success("Access granted.")
