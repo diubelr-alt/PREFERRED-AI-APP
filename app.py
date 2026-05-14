@@ -1,6 +1,7 @@
 import os
 import datetime
 import requests
+import json
 from math import ceil
 
 import streamlit as st
@@ -31,12 +32,12 @@ st.set_page_config(
 init_db()
 
 # ----------------------------------------------------
-# AUTH — SOLO USERNAME + PASSWORD
+# AUTH
 # ----------------------------------------------------
 VALID_USERS = {
     "preferred": {
         "password": "material123",
-        "license_until": "2027-12-31",  # licencia global corporativa
+        "license_until": "2027-12-31",
     }
 }
 
@@ -65,48 +66,27 @@ if "auth" not in st.session_state:
 st.markdown(
     """
     <style>
-    body {
-        background-color: #111111;
-    }
-    .main {
-        background-color: #111111;
-    }
+    body { background-color: #111111; }
+    .main { background-color: #111111; }
     .big-title {
-        font-size: 40px;
-        font-weight: 800;
-        color: #00ff55;
-        text-align: center;
-        letter-spacing: 1px;
-        font-style: italic;
+        font-size: 40px; font-weight: 800; color: #00ff55;
+        text-align: center; letter-spacing: 1px; font-style: italic;
     }
     .sub-title {
-        text-align: center;
-        color: #cccccc;
-        font-size: 16px;
-        font-style: italic;
+        text-align: center; color: #cccccc; font-size: 16px; font-style: italic;
     }
     .section-title {
-        font-size: 22px;
-        font-weight: 700;
-        color: #00ff55;
-        margin-top: 10px;
-        font-style: italic;
+        font-size: 22px; font-weight: 700; color: #00ff55;
+        margin-top: 10px; font-style: italic;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    "<div class='big-title'>PREFERRED MATERIAL INC – AI FIELD SUITE</div>",
-    unsafe_allow_html=True,
-)
-st.markdown(
-    "<div class='sub-title'>Asphalt Tonnage & Logistics Engine</div>",
-    unsafe_allow_html=True,
-)
+st.markdown("<div class='big-title'>PREFERRED MATERIAL INC – AI FIELD SUITE</div>", unsafe_allow_html=True)
+st.markdown("<div class='sub-title'>Asphalt Tonnage & Logistics Engine</div>", unsafe_allow_html=True)
 
-# Login image
 login_image_path = os.path.join("assets", "photos", "login.jpg")
 if os.path.exists(login_image_path):
     st.image(login_image_path, use_container_width=True)
@@ -148,57 +128,109 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # ----------------------------------------------------
-# WEATHER
+# WEATHER — GPS AUTOMÁTICO + FALLBACK
 # ----------------------------------------------------
-def get_weather():
+st.markdown("<div class='section-title'>🌦️ Weather Conditions</div>", unsafe_allow_html=True)
+
+gps_js = """
+<script>
+navigator.geolocation.getCurrentPosition(
+    function(pos) {
+        const coords = {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude
+        };
+        const query = new URLSearchParams(window.location.search);
+        query.set("gps", JSON.stringify(coords));
+        window.location.search = query.toString();
+    },
+    function(err) {
+        const query = new URLSearchParams(window.location.search);
+        query.set("gps_error", err.message);
+        window.location.search = query.toString();
+    }
+);
+</script>
+"""
+
+st.components.v1.html(gps_js, height=0)
+
+gps_raw = st.experimental_get_query_params().get("gps", [None])[0]
+
+lat = None
+lon = None
+
+if gps_raw:
     try:
-        geo = requests.get("http://ip-api.com/json/", timeout=5).json()
-        lat, lon = geo.get("lat"), geo.get("lon")
-        city = geo.get("city", "Unknown")
+        gps = json.loads(gps_raw)
+        lat = gps["latitude"]
+        lon = gps["longitude"]
+    except:
+        lat = None
+        lon = None
 
-        if lat is None or lon is None:
-            return None
+if st.button("CHECK WEATHER"):
 
+    if lat and lon:
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}&current_weather=true"
         )
-        data = requests.get(url, timeout=5).json()
+        data = requests.get(url).json()
         w = data["current_weather"]
         temp_c = w["temperature"]
         temp_f = temp_c * 9 / 5 + 32
 
-        return {
-            "city": city,
-            "temp_c": temp_c,
-            "temp_f": temp_f,
-            "wind": w["windspeed"],
-            "code": w["weathercode"],
-        }
-    except Exception:
-        return None
-
-
-st.markdown("<div class='section-title'>🌦️ Weather Conditions</div>", unsafe_allow_html=True)
-
-if st.button("CHECK WEATHER"):
-    weather = get_weather()
-    if weather:
         colw1, colw2, colw3 = st.columns(3)
         with colw1:
-            st.metric("Location", weather["city"])
+            st.metric("Location", "GPS Position")
         with colw2:
-            st.metric("Temperature (°F)", f"{weather['temp_f']:.1f}")
+            st.metric("Temperature (°F)", f"{temp_f:.1f}")
         with colw3:
-            st.metric("Wind Speed", f"{weather['wind']} mph")
+            st.metric("Wind Speed", f"{w['windspeed']} mph")
 
         rain_codes = [51, 53, 55, 61, 63, 65, 80, 81, 82]
-        if weather["code"] in rain_codes:
+        if w["weathercode"] in rain_codes:
             st.error("⚠️ Rain approaching / raining in the area.")
         else:
             st.success("✅ No rain detected nearby.")
+
     else:
-        st.error("Weather system unavailable.")
+        st.warning("GPS unavailable. Enter your city manually.")
+        city = st.text_input("City (e.g., Tampa, FL)")
+        if city:
+            geo = requests.get(
+                f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
+            ).json()
+
+            if "results" in geo:
+                lat = geo["results"][0]["latitude"]
+                lon = geo["results"][0]["longitude"]
+
+                url = (
+                    "https://api.open-meteo.com/v1/forecast"
+                    f"?latitude={lat}&longitude={lon}&current_weather=true"
+                )
+                data = requests.get(url).json()
+                w = data["current_weather"]
+                temp_c = w["temperature"]
+                temp_f = temp_c * 9 / 5 + 32
+
+                colw1, colw2, colw3 = st.columns(3)
+                with colw1:
+                    st.metric("Location", city)
+                with colw2:
+                    st.metric("Temperature (°F)", f"{temp_f:.1f}")
+                with colw3:
+                    st.metric("Wind Speed", f"{w['windspeed']} mph")
+
+                rain_codes = [51, 53, 55, 61, 63, 65, 80, 81, 82]
+                if w["weathercode"] in rain_codes:
+                    st.error("⚠️ Rain approaching / raining in the area.")
+                else:
+                    st.success("✅ No rain detected nearby.")
+            else:
+                st.error("City not found.")
 
 st.markdown("---")
 
@@ -217,7 +249,6 @@ with colB:
 with colC:
     depth_in = st.number_input("Depth (in)", min_value=0.0, value=0.0)
 
-# RESET BUTTON
 if st.button("RESET / CLEAR PROJECT"):
     for k in defaults.keys():
         st.session_state[k] = defaults[k]
@@ -320,23 +351,11 @@ if photo and project_name.strip() != "":
 
     colV1, colV2, colV3 = st.columns(3)
     with colV1:
-        st.number_input(
-            "AI Length (ft)",
-            value=float(ai_measures["length_ft"]),
-            disabled=True,
-        )
+        st.number_input("AI Length (ft)", value=float(ai_measures["length_ft"]), disabled=True)
     with colV2:
-        st.number_input(
-            "AI Width (ft)",
-            value=float(ai_measures["width_ft"]),
-            disabled=True,
-        )
+        st.number_input("AI Width (ft)", value=float(ai_measures["width_ft"]), disabled=True)
     with colV3:
-        st.number_input(
-            "AI Depth (in)",
-            value=float(ai_measures["depth_in"]),
-            disabled=True,
-        )
+        st.number_input("AI Depth (in)", value=float(ai_measures["depth_in"]), disabled=True)
 
     if st.button("USE AI MEASUREMENTS"):
         st.info("AI measurements placeholder applied (currently zeros).")
@@ -359,10 +378,7 @@ else:
         pid, name, L, W, D, A, V, T, deleted, created_at = p
         colH1, colH2 = st.columns([4, 1])
         with colH1:
-            st.write(
-                f"🚧 **{name}** | TONS: **{T:.2f}** | "
-                f"L:{L} W:{W} D:{D} | {created_at}"
-            )
+            st.write(f"🚧 **{name}** | TONS: **{T:.2f}** | L:{L} W:{W} D:{D} | {created_at}")
         with colH2:
             if st.button("🗑️ Delete", key=f"del_{pid}"):
                 delete_project(pid)
@@ -388,5 +404,8 @@ else:
         with colTr2:
             if st.button("♻️ Restore", key=f"restore_{pid}"):
                 restore_project(pid)
+                st.success(f"Project '{name}' restored.")
+                st.experimental_rerun()
+
                 st.success(f"Project '{name}' restored.")
                 st.experimental_rerun()
