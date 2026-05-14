@@ -407,5 +407,3 @@ else:
                 st.success(f"Project '{name}' restored.")
                 st.experimental_rerun()
 
-                st.success(f"Project '{name}' restored.")
-                st.experimental_rerun()
