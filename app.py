@@ -384,7 +384,7 @@ else:
             if st.button("🗑️ Delete", key=f"del_{pid}"):
                 delete_project(pid)
                 st.warning(f"Project '{name}' moved to Trash.")
-                st.experimental_rerun()
+                st.rerun()
 
 # ----------------------------------------------------
 # TRASH / RECOVERY
