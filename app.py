@@ -155,7 +155,8 @@ navigator.geolocation.getCurrentPosition(
 
 st.components.v1.html(gps_js, height=0)
 
-gps_raw = st.experimental_get_query_params().get("gps", [None])[0]
+gps_raw = st.query_params.get("gps", None)
+
 
 lat = None
 lon = None
