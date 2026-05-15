@@ -405,6 +405,6 @@ else:
         with colTr2:
             if st.button("♻️ Restore", key=f"restore_{pid}"):
                 restore_project(pid)
-                st.success(f"Project '{name}' restored.")
-                st.experimental_rerun()
+                st.success(...)
+                st.rerun()
 
