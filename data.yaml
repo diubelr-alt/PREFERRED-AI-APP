@@ -1,0 +1,9 @@
+path: dataset
+train: images/train
+val: images/val
+
+names:
+  0: tape
+  1: A
+  2: B
+  3: C

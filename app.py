@@ -1,391 +1,213 @@
-import os
-import datetime
-import requests
-from math import ceil
-
+import io
+import cv2
+import numpy as np
 import streamlit as st
+from PIL import Image
+from ultralytics import YOLO
 
-from modules.calculations import (
-    calculate_area,
-    calculate_volume,
-    calculate_tons,
-)
-from modules.database import (
-    init_db,
-    save_project,
-    get_projects,
-    delete_project,
-    restore_project,
-)
-from modules.vision import measure_from_image
+# =========================
+# CONFIG STREAMLIT
+# =========================
+st.set_page_config(page_title="AI Measure Asphalt", layout="wide")
 
-# ----------------------------------------------------
-# CONFIG
-# ----------------------------------------------------
-st.set_page_config(
-    page_title="PREFERRED MATERIAL INC – AI FIELD SUITE",
-    layout="centered",
-)
+st.title("AI Measure – A→B / B→C con Depth (in) y Tons")
+st.caption("Cámara + YOLO + Visualización manual de colores. Sin weather. Versión final.")
 
-# Ensure DB exists
-init_db()
-
-# ----------------------------------------------------
-# AUTH / LICENSE
-# ----------------------------------------------------
-VALID_USERS = {
-    "admin": {
-        "password": "admin123",
-        "license_until": "2027-12-31",  # adjust as needed
-    }
-}
-
-
-def check_license(user: str, pwd: str):
-    data = VALID_USERS.get(user)
-    if not data:
-        return False, "User not found."
-
-    if data["password"] != pwd:
-        return False, "Invalid password."
-
-    today = datetime.date.today()
-    exp = datetime.datetime.strptime(data["license_until"], "%Y-%m-%d").date()
-    if today > exp:
-        return False, "License expired."
-
-    return True, "OK"
-
-
-if "auth" not in st.session_state:
-    st.session_state.auth = False
-
-# Login screen
-st.markdown(
-    """
-    <style>
-    body {
-        background-color: #111111;
-    }
-    .main {
-        background-color: #111111;
-    }
-    .big-title {
-        font-size: 40px;
-        font-weight: 800;
-        color: #00ff55;
-        text-align: center;
-        letter-spacing: 1px;
-        font-style: italic;
-    }
-    .sub-title {
-        text-align: center;
-        color: #cccccc;
-        font-size: 16px;
-        font-style: italic;
-    }
-    .section-title {
-        font-size: 22px;
-        font-weight: 700;
-        color: #00ff55;
-        margin-top: 10px;
-        font-style: italic;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    "<div class='big-title'>PREFERRED MATERIAL INC – AI FIELD SUITE</div>",
-    unsafe_allow_html=True,
-)
-st.markdown(
-    "<div class='sub-title'>Asphalt Tonnage & Logistics Engine</div>",
-    unsafe_allow_html=True,
-)
-
-# Login image (you can place a photo in assets/photos and adjust path)
-login_image_path = os.path.join("assets", "photos", "login.jpg")
-if os.path.exists(login_image_path):
-    st.image(login_image_path, use_column_width=True)
-
-st.markdown("### Login")
-
-col_login1, col_login2 = st.columns(2)
-with col_login1:
-    user = st.text_input("User Name")
-with col_login2:
-    pwd = st.text_input("Password", type="password")
-
-if st.button("LOGIN"):
-    ok, msg = check_license(user, pwd)
-    if ok:
-        st.session_state.auth = True
-        st.success("Access granted.")
-    else:
-        st.session_state.auth = False
-        st.error(msg)
-
-if not st.session_state.auth:
-    st.stop()
-
-st.markdown("---")
-
-# ----------------------------------------------------
-# SESSION STATE INIT
-# ----------------------------------------------------
-defaults = {
-    "area": 0.0,
-    "volume": 0.0,
-    "base_tons": 0.0,
-    "total_tons": 0.0,
-    "ai_loads": 0,
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-# ----------------------------------------------------
-# WEATHER
-# ----------------------------------------------------
-def get_weather():
+# =========================
+# CARGA MODELO YOLO
+# =========================
+@st.cache_resource
+def load_model():
     try:
-        geo = requests.get("http://ip-api.com/json/", timeout=5).json()
-        lat, lon = geo.get("lat"), geo.get("lon")
-        city = geo.get("city", "Unknown")
-
-        if lat is None or lon is None:
-            return None
-
-        url = (
-            "https://api.open-meteo.com/v1/forecast"
-            f"?latitude={lat}&longitude={lon}&current_weather=true"
-        )
-        data = requests.get(url, timeout=5).json()
-        w = data["current_weather"]
-        temp_c = w["temperature"]
-        temp_f = temp_c * 9 / 5 + 32
-
-        return {
-            "city": city,
-            "temp_c": temp_c,
-            "temp_f": temp_f,
-            "wind": w["windspeed"],
-            "code": w["weathercode"],
-        }
-    except Exception:
+        model = YOLO("measure_model.pt")  # Debe estar en la misma carpeta
+        return model
+    except Exception as e:
+        st.error(f"No se pudo cargar measure_model.pt: {e}")
         return None
 
+model = load_model()
 
-st.markdown("<div class='section-title'>🌦️ Weather Conditions</div>", unsafe_allow_html=True)
+# =========================
+# HELPERS
+# =========================
+def feet_to_feet_inches(feet_value: float):
+    total_inches = round(feet_value * 12)
+    ft = total_inches // 12
+    inch = total_inches % 12
+    return f"{int(ft)}' {int(inch)}\""
 
-if st.button("CHECK WEATHER"):
-    weather = get_weather()
-    if weather:
-        colw1, colw2, colw3 = st.columns(3)
-        with colw1:
-            st.metric("Location", weather["city"])
-        with colw2:
-            st.metric("Temperature (°F)", f"{weather['temp_f']:.1f}")
-        with colw3:
-            st.metric("Wind Speed", f"{weather['wind']} mph")
+def distance_pixels(p1, p2):
+    return float(np.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2))
 
-        rain_codes = [51, 53, 55, 61, 63, 65, 80, 81, 82]
-        if weather["code"] in rain_codes:
-            st.error("⚠️ Rain approaching / raining in the area.")
-        else:
-            st.success("✅ No rain detected nearby.")
-    else:
-        st.error("Weather system unavailable.")
+def hex_to_bgr(hex_color):
+    hex_color = hex_color.lstrip('#')
+    return (int(hex_color[4:6], 16), int(hex_color[2:4], 16), int(hex_color[0:2], 16))
 
-st.markdown("---")
+# =========================
+# CORE: MEDIR DESDE IMAGEN
+# =========================
+def measure_from_image(image_bytes: bytes, depth_in: float,
+                       color_AB, color_BC, text_color, line_thickness):
+    if model is None:
+        return None, "Modelo YOLO no cargado."
 
-# ----------------------------------------------------
-# PROJECT MEASUREMENTS
-# ----------------------------------------------------
-st.markdown("<div class='section-title'>📏 Project Measurements</div>", unsafe_allow_html=True)
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-project_name = st.text_input("Project Name")
+    results = model(img)[0]
 
-colA, colB, colC = st.columns(3)
-with colA:
-    length_ft = st.number_input("Length (ft)", min_value=0.0, value=0.0)
-with colB:
-    width_ft = st.number_input("Width (ft)", min_value=0.0, value=0.0)
-with colC:
-    depth_in = st.number_input("Depth (in)", min_value=0.0, value=0.0)
+    tape_box = None
+    markers = []
 
-# RESET BUTTON
-if st.button("RESET / CLEAR PROJECT"):
-    for k in defaults.keys():
-        st.session_state[k] = defaults[k]
-    st.experimental_rerun()
+    for box in results.boxes:
+        cls = int(box.cls[0])
+        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
 
-st.markdown("---")
+        if cls == 0:
+            tape_box = (x1, y1, x2, y2)
+        elif cls in [1, 2, 3]:
+            markers.append((cx, cy, cls))
 
-# ----------------------------------------------------
-# TRUCK & MATERIAL SETTINGS
-# ----------------------------------------------------
-st.markdown("<div class='section-title'>🚚 Truck & Material Settings</div>", unsafe_allow_html=True)
+    if tape_box is None:
+        return None, "No se detectó la cinta (clase 0)."
 
-colT1, colT2, colT3 = st.columns(3)
-with colT1:
-    truck_capacity = st.number_input("Truck Capacity (tons)", value=21.0, min_value=1.0)
-with colT2:
-    manual_trucks = st.number_input("Manual Trucks Planned", min_value=0, value=0)
-with colT3:
-    extra_tons = st.number_input("Extra Tons (correction)", min_value=0.0, value=0.0)
+    if len(markers) < 3:
+        return None, "No se detectaron A, B y C."
 
-st.markdown("---")
+    tx1, ty1, tx2, ty2 = tape_box
+    tape_pixels = abs(tx2 - tx1)
+    if tape_pixels <= 0:
+        return None, "Error en la detección de la cinta."
 
-# ----------------------------------------------------
-# CALCULATE
-# ----------------------------------------------------
-if st.button("CALCULATE"):
-    if project_name.strip() == "":
-        st.error("Project Name is required.")
-    elif length_ft <= 0 or width_ft <= 0 or depth_in <= 0:
-        st.error("All dimensions must be greater than zero.")
-    else:
-        area = calculate_area(length_ft, width_ft)
-        volume = calculate_volume(area, depth_in)
-        base_tons = calculate_tons(volume)
-        total_tons = base_tons + extra_tons
-        ai_loads = ceil(total_tons / truck_capacity)
+    pixels_per_foot = tape_pixels / 1.0
 
-        st.session_state.area = area
-        st.session_state.volume = volume
-        st.session_state.base_tons = base_tons
-        st.session_state.total_tons = total_tons
-        st.session_state.ai_loads = ai_loads
+    A = next((m for m in markers if m[2] == 1), None)
+    B = next((m for m in markers if m[2] == 2), None)
+    C = next((m for m in markers if m[2] == 3), None)
 
-        save_project(
-            {
-                "project_name": project_name,
-                "length_ft": length_ft,
-                "width_ft": width_ft,
-                "depth_in": depth_in,
-                "area_sqft": area,
-                "volume_cuft": volume,
-                "tons": total_tons,
-            }
-        )
+    if A is None or B is None or C is None:
+        return None, "Faltan marcadores A, B o C."
 
-        st.success("Calculation complete.")
+    Ax, Ay, _ = A
+    Bx, By, _ = B
+    Cx, Cy, _ = C
 
-# DISPLAY RESULTS
-st.markdown("### 📊 Results")
-colR1, colR2, colR3 = st.columns(3)
-with colR1:
-    st.metric("Area", f"{st.session_state.area:.2f} sq ft")
-with colR2:
-    st.metric("Volume", f"{st.session_state.volume:.2f} cu ft")
-with colR3:
-    st.metric("Base Tons", f"{st.session_state.base_tons:.2f}")
+    px_len = distance_pixels((Ax, Ay), (Bx, By))
+    px_wid = distance_pixels((Bx, By), (Cx, Cy))
 
-colR4, colR5, colR6 = st.columns(3)
-with colR4:
-    st.metric("Extra Tons", f"{extra_tons:.2f}")
-with colR5:
-    st.metric("Total Tons (AI)", f"{st.session_state.total_tons:.2f}")
-with colR6:
-    st.metric("AI Required Loads", st.session_state.ai_loads)
+    length_ft = px_len / pixels_per_foot
+    width_ft = px_wid / pixels_per_foot
 
-st.markdown("### 🧠 AI Decision Engine")
-if manual_trucks > 0 and st.session_state.ai_loads > 0:
-    diff = manual_trucks - st.session_state.ai_loads
-    if diff > 0:
-        st.error(f"Manual order has {diff} extra truck(s).")
-    elif diff < 0:
-        st.warning(f"Manual order is short by {abs(diff)} truck(s).")
-    else:
-        st.success("Manual order matches AI calculation.")
-else:
-    st.info("Enter manual truck count to compare AI vs Manual.")
+    draw_img = img.copy()
 
-# ----------------------------------------------------
-# AI VISION MODE
-# ----------------------------------------------------
-st.markdown("---")
-st.markdown("<div class='section-title'>🤖📷 AI VISION MODE</div>", unsafe_allow_html=True)
+    # Convertir colores
+    colAB = hex_to_bgr(color_AB)
+    colBC = hex_to_bgr(color_BC)
+    colTXT = hex_to_bgr(text_color)
 
-photo = st.camera_input("Capture project area")
+    # Dibujar puntos
+    for (x, y, cls) in [A, B, C]:
+        cv2.circle(draw_img, (int(x), int(y)), 10, (0, 255, 255), -1)
+        label = "A" if cls == 1 else "B" if cls == 2 else "C"
+        cv2.putText(draw_img, label, (int(x)+5, int(y)-5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-if photo and project_name.strip() != "":
-    st.success("Image captured.")
-    image_bytes = photo.getvalue()
-    ai_measures = measure_from_image(image_bytes, project_name)
+    # Líneas
+    text_len = feet_to_feet_inches(length_ft)
+    text_wid = feet_to_feet_inches(width_ft)
 
-    colV1, colV2, colV3 = st.columns(3)
-    with colV1:
-        st.number_input(
-            "AI Length (ft)",
-            value=float(ai_measures["length_ft"]),
-            disabled=True,
-        )
-    with colV2:
-        st.number_input(
-            "AI Width (ft)",
-            value=float(ai_measures["width_ft"]),
-            disabled=True,
-        )
-    with colV3:
-        st.number_input(
-            "AI Depth (in)",
-            value=float(ai_measures["depth_in"]),
-            disabled=True,
-        )
+    midAB = (int((Ax + Bx) / 2), int((Ay + By) / 2))
+    midBC = (int((Bx + Cx) / 2), int((By + Cy) / 2))
 
-    if st.button("USE AI MEASUREMENTS"):
-        st.info("AI measurements placeholder applied (currently zeros).")
-else:
-    if photo and project_name.strip() == "":
-        st.warning("Set a Project Name before capturing AI Vision images.")
+    cv2.line(draw_img, (int(Ax), int(Ay)), (int(Bx), int(By)), colAB, line_thickness)
+    cv2.putText(draw_img, text_len, (midAB[0]+5, midAB[1]-5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, colTXT, 3)
 
-# ----------------------------------------------------
-# PROJECT HISTORY
-# ----------------------------------------------------
-st.markdown("---")
-st.markdown("<div class='section-title'>📂 Project History</div>", unsafe_allow_html=True)
+    cv2.line(draw_img, (int(Bx), int(By)), (int(Cx), int(Cy)), colBC, line_thickness)
+    cv2.putText(draw_img, text_wid, (midBC[0]+5, midBC[1]-5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, colTXT, 3)
 
-projects = get_projects(active_only=True)
+    draw_img_rgb = cv2.cvtColor(draw_img, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(draw_img_rgb)
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    buf.seek(0)
 
-if not projects:
-    st.info("No projects saved.")
-else:
-    for p in projects:
-        pid, name, L, W, D, A, V, T, deleted, created_at = p
-        colH1, colH2 = st.columns([4, 1])
-        with colH1:
-            st.write(
-                f"🚧 **{name}** | TONS: **{T:.2f}** | "
-                f"L:{L} W:{W} D:{D} | {created_at}"
+    result = {
+        "length_ft": round(length_ft, 2),
+        "width_ft": round(width_ft, 2),
+        "depth_in": round(depth_in, 2)
+    }
+
+    return (buf, result), None
+
+# =========================
+# UI PRINCIPAL
+# =========================
+st.subheader("Opciones de visualización manual")
+
+color_AB = st.color_picker("Color línea A→B", "#00FF00")
+color_BC = st.color_picker("Color línea B→C", "#00FFFF")
+text_color = st.color_picker("Color del texto", "#FFFFFF")
+line_thickness = st.slider("Grosor de línea", 2, 10, 4)
+
+if st.button("Reset Colors"):
+    color_AB = "#00FF00"
+    color_BC = "#00FFFF"
+    text_color = "#FFFFFF"
+
+st.subheader("Modos extra")
+modo = st.radio("Modo visual:", ["Normal", "High Contrast", "Night Vision"])
+
+if modo == "High Contrast":
+    color_AB = "#FFFFFF"
+    color_BC = "#000000"
+    text_color = "#FF0000"
+
+elif modo == "Night Vision":
+    color_AB = "#00FF00"
+    color_BC = "#00FF00"
+    text_color = "#00FF00"
+
+col_left, col_right = st.columns([1, 1])
+
+with col_left:
+    depth_in = st.number_input("Depth (in)", min_value=0.0, max_value=24.0, value=3.0, step=0.25)
+
+    img_file = st.camera_input("Tomar foto del tramo (con cinta + A/B/C visibles)")
+
+    if img_file is not None:
+        image_bytes = img_file.getvalue()
+        with st.spinner("Procesando imagen..."):
+            output, err = measure_from_image(
+                image_bytes, depth_in,
+                color_AB, color_BC, text_color, line_thickness
             )
-        with colH2:
-            if st.button("🗑️ Delete", key=f"del_{pid}"):
-                delete_project(pid)
-                st.warning(f"Project '{name}' moved to Trash.")
-                st.experimental_rerun()
 
-# ----------------------------------------------------
-# TRASH / RECOVERY
-# ----------------------------------------------------
-st.markdown("---")
-st.markdown("<div class='section-title'>🗑️ Trash (Recover Projects)</div>", unsafe_allow_html=True)
+        if err:
+            st.error(err)
+        else:
+            buf, measures = output
+            st.success("Medición completada.")
+            st.write(f"**Length (ft):** {measures['length_ft']}")
+            st.write(f"**Width (ft):** {measures['width_ft']}")
+            st.write(f"**Depth (in):** {measures['depth_in']}")
 
-trash = get_projects(active_only=False, deleted_only=True)
+            length_ft = measures["length_ft"]
+            width_ft = measures["width_ft"]
+            depth_ft = measures["depth_in"] / 12.0
 
-if not trash:
-    st.info("Trash is empty.")
-else:
-    for p in trash:
-        pid, name, L, W, D, A, V, T, deleted, created_at = p
-        colTr1, colTr2 = st.columns([4, 1])
-        with colTr1:
-            st.write(f"🗂️ {name} | TONS: {T:.2f} | {created_at}")
-        with colTr2:
-            if st.button("♻️ Restore", key=f"restore_{pid}"):
-                restore_project(pid)
-                st.success(f"Project '{name}' restored.")
-                st.experimental_rerun()
+            area_sqft = length_ft * width_ft
+            volume_cuft = area_sqft * depth_ft
+            tons = volume_cuft * 0.0725
+
+            st.write(f"**Área (sq ft):** {round(area_sqft, 2)}")
+            st.write(f"**Volumen (ft³):** {round(volume_cuft, 2)}")
+            st.write(f"**Tons (aprox):** {round(tons, 2)}")
+
+with col_right:
+    st.subheader("Vista AI")
+    if img_file is not None and not err:
+        st.image(buf, caption="Medición AI", use_column_width=True)

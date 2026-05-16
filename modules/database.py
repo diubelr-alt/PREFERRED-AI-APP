@@ -1,20 +1,20 @@
-import os
 import sqlite3
-from typing import List, Tuple, Dict, Any
+import os
+from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "projects.db")
-
+DB_PATH = os.path.join("data", "projects.db")
 
 def _get_conn():
-    os.makedirs(os.path.join(os.path.dirname(__file__), "..", "data"), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    os.makedirs("data", exist_ok=True)
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
-
-def init_db() -> None:
+# ----------------------------------------------------
+# INIT DB
+# ----------------------------------------------------
+def init_db():
     conn = _get_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS projects (
@@ -27,70 +27,82 @@ def init_db() -> None:
             volume_cuft REAL,
             tons REAL,
             deleted INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT
         );
         """
     )
+
     conn.commit()
     conn.close()
 
-
-def save_project(data: Dict[str, Any]) -> None:
+# ----------------------------------------------------
+# SAVE PROJECT
+# ----------------------------------------------------
+def save_project(data: dict):
     conn = _get_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         INSERT INTO projects (
             project_name, length_ft, width_ft, depth_in,
-            area_sqft, volume_cuft, tons, deleted
+            area_sqft, volume_cuft, tons, deleted, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
         """,
         (
-            data.get("project_name"),
-            data.get("length_ft"),
-            data.get("width_ft"),
-            data.get("depth_in"),
-            data.get("area_sqft"),
-            data.get("volume_cuft"),
-            data.get("tons"),
+            data["project_name"],
+            data["length_ft"],
+            data["width_ft"],
+            data["depth_in"],
+            data["area_sqft"],
+            data["volume_cuft"],
+            data["tons"],
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         ),
     )
+
     conn.commit()
     conn.close()
 
-
-def get_projects(active_only: bool = True, deleted_only: bool = False) -> List[Tuple]:
+# ----------------------------------------------------
+# GET PROJECTS
+# ----------------------------------------------------
+def get_projects(active_only=True, deleted_only=False):
     conn = _get_conn()
     cur = conn.cursor()
 
-    if deleted_only:
-        cur.execute(
-            "SELECT * FROM projects WHERE deleted = 1 ORDER BY created_at DESC"
-        )
-    elif active_only:
-        cur.execute(
-            "SELECT * FROM projects WHERE deleted = 0 ORDER BY created_at DESC"
-        )
+    if active_only:
+        cur.execute("SELECT * FROM projects WHERE deleted = 0 ORDER BY id DESC")
+    elif deleted_only:
+        cur.execute("SELECT * FROM projects WHERE deleted = 1 ORDER BY id DESC")
     else:
-        cur.execute("SELECT * FROM projects ORDER BY created_at DESC")
+        cur.execute("SELECT * FROM projects ORDER BY id DESC")
 
     rows = cur.fetchall()
     conn.close()
-    return [tuple(r) for r in rows]
+    return rows
 
-
-def delete_project(project_id: int) -> None:
+# ----------------------------------------------------
+# DELETE PROJECT (MOVE TO TRASH)
+# ----------------------------------------------------
+def delete_project(pid: int):
     conn = _get_conn()
     cur = conn.cursor()
-    cur.execute("UPDATE projects SET deleted = 1 WHERE id = ?", (project_id,))
+
+    cur.execute("UPDATE projects SET deleted = 1 WHERE id = ?", (pid,))
+
     conn.commit()
     conn.close()
 
-
-def restore_project(project_id: int) -> None:
+# ----------------------------------------------------
+# RESTORE PROJECT
+# ----------------------------------------------------
+def restore_project(pid: int):
     conn = _get_conn()
     cur = conn.cursor()
-    cur.execute("UPDATE projects SET deleted = 0 WHERE id = ?", (project_id,))
+
+    cur.execute("UPDATE projects SET deleted = 0 WHERE id = ?", (pid,))
+
     conn.commit()
     conn.close()
